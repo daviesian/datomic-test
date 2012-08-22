@@ -1,25 +1,18 @@
 (ns datomic-test.core
   (:use [datomic.api :only [q db] :as d]
-        [clojure.pprint]))
+        [clojure.pprint]
+        [datomic-test.datomic-helpers]))
 
 
 
 ;; Define the minimal datomic schema for a database containing only "thing"s
 (def simple-schema
-  [{:db/id #db/id[:db.part/db]
-    :db/ident :thing/name
-    :db/valueType :db.type/string
-    :db/cardinality :db.cardinality/one
-    :db.install/_attribute :db.part/db}
-   {:db/id #db/id[:db.part/db]
-    :db/ident :thing/value
-    :db/valueType :db.type/string
-    :db/cardinality :db.cardinality/one
-    :db.install/_attribute :db.part/db}])
+  [(new-attribute-spec :thing/name :db.type/string :db.cardinality/one)
+   (new-attribute-spec :thing/value :db.type/long :db.cardinality/one)])
 
 ;; This is where my database will live
 (def uri "datomic:mem://my-things")
-
+;(def uri "datomic:free://localhost:4334/my-things")
 
 ;; (Re)create the database
 (d/delete-database uri)
@@ -30,13 +23,15 @@
 
 ;; Install our schema into the new database
 (do
-  (d/transact conn simple-schema))
+  (try
+    @(d/transact conn simple-schema)
+    (catch Exception e (pprint e))))
 
 ;; Add a thing to the database
 (do
   @(d/transact conn [{:db/id #db/id[:db.part/user]
                       :thing/name "My first thing"
-                      :thing/value "Value of my first thing. Probably 42."}]))
+                      :thing/value 42}]))
 
 
 ;; Function to return all things in a particular database state
@@ -56,7 +51,7 @@
 (do
   @(d/transact conn [{:db/id #db/id[:db.part/user]
                       :thing/name "My second thing"
-                      :thing/value "Value of my second thing. Probably 42 as well."}]))
+                      :thing/value 43}]))
 
 ;; Again, get all the things out of the database
 (print-all-current-things)
@@ -107,3 +102,35 @@
 (pprint (get-all-things-more-elegantly (db conn)))
 
 ;; Yay. I think that's enough for today.
+
+
+;; Create a transaction function that can increase the value of an attribute
+;; For some reason, #db/fn only works with def, not anywhere else.
+;; Elsewhere, must use (datomic.function/construct '{...})
+(def inc-fn
+  #db/fn {:lang "clojure"
+          :params [db id attr amount]
+          :code (let [e    (datomic.api/entity db id)
+                      orig (attr e 0) ]
+                  [[:db/add id attr (+ orig amount)]])})
+
+(do
+  @(d/transact conn
+               [{:db/id #db/id[:db.part/user]
+                 :db/ident :inc
+                 :db/fn inc-fn}]))
+
+
+;; Now increment the value of the first "thing" still in the database
+
+(def first-thing-id
+  (ffirst (q '[:find ?t
+               :where [?t :thing/name]] (db conn))))
+
+(do
+  @(d/transact conn
+               [[:inc first-thing-id :thing/value 10]]))
+
+;; See that it's worked
+
+(pprint (get-all-things-more-elegantly (db conn)))
